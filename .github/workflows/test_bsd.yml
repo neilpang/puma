@@ -18,7 +18,7 @@ jobs:
   freebsd:
     name: freebsd ruby
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: repo checkout
         uses: actions/checkout@v7
@@ -42,7 +42,16 @@ jobs:
             gem install --no-document bundler
             bundle install --jobs 4
             bundle exec rake compile
-            test/runner --verbose
+            rc=0
+            test/runner --verbose || rc=$?
+            # EXPERIMENT: is anything still alive after the suite?
+            echo "--- processes still holding the session ---"
+            pgrep -fl puma || echo "  none"
+            # Integration tests spawn puma servers; a survivor holding the
+            # session's stdout keeps the ssh command from returning, and the
+            # job then sits idle until it times out.
+            pkill -f puma 2>/dev/null || true
+            exit $rc
         env:
           CI: true
           GITHUB_ACTIONS: true
