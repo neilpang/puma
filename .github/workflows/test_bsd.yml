@@ -3,7 +3,7 @@ name: FreeBSD
 on:
   push:
     branches:
-      - main
+      - '**'
   pull_request:
   workflow_dispatch:
 
@@ -42,7 +42,15 @@ jobs:
             gem install --no-document bundler
             bundle install --jobs 4
             bundle exec rake compile
-            test/runner --verbose
+            rc=0
+            test/runner --verbose || rc=$?
+            # Integration servers are spawned with IO.popen and, with the
+            # default merge_err: false, inherit this session's stderr (see
+            # test/helpers/integration.rb). One that outlives the suite holds
+            # that descriptor open, the ssh command never returns, and the job
+            # then idles until it times out with every test already passed.
+            pkill -f 'bin/puma' 2>/dev/null || true
+            exit $rc
         env:
           CI: true
           GITHUB_ACTIONS: true
