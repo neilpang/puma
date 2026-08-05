@@ -1,0 +1,81 @@
+name: exp hang
+
+on:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  freebsd:
+    name: hang probe ${{ matrix.attempt }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3, 4]
+    steps:
+      - name: repo checkout
+        uses: actions/checkout@v7
+
+      - name: test
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          cache-after-prepare: true
+          envs: 'CI PUMA_TEST_DEBUG TESTOPTS MT_CPU RUNNER_TOOL_CACHE GITHUB_ACTIONS'
+          prepare: |
+            pkg install -y git devel/ragel devel/ruby-gems gmake
+          run: |
+            set +e
+            ulimit -n 4000 2>/dev/null
+            ruby -v
+            gem install --no-document bundler > /tmp/gem.log 2>&1
+            bundle install --jobs 4 > /tmp/bundle.log 2>&1
+            echo "@@@ bundle rc=$?"
+            bundle exec rake compile > /tmp/compile.log 2>&1
+            echo "@@@ compile rc=$?"
+
+            # A watchdog whose OWN output goes to a file -- if it wrote to the
+            # session it would itself be a process holding stdout open, which
+            # is the thing being measured.
+            (
+              sleep 660
+              {
+                echo "=== watchdog fired: the runner was still alive ==="
+                date
+                ps -axww
+                echo "--- open files of everything ruby ---"
+                for p in `pgrep ruby`; do echo "== pid $p"; procstat -f $p; done
+              } > /tmp/watchdog.txt 2>&1
+              pkill -TERM -f 'test/runner'
+              sleep 10
+              pkill -KILL -f 'test/runner'
+            ) > /dev/null 2>&1 &
+            WD=$!
+
+            echo "@@@ suite start `date +%s`"
+            test/runner --verbose
+            echo "@@@ suite rc=$? end `date +%s`"
+            kill $WD 2>/dev/null
+
+            echo "@@@ ==== state immediately after the suite returned ===="
+            echo "--- ruby processes:"
+            pgrep -fl ruby || echo "   none"
+            echo "--- puma processes:"
+            pgrep -fl puma || echo "   none"
+            echo "--- everything else with a controlling terminal:"
+            ps -axww | head -30
+            echo "--- who holds fd 1 of this shell:"
+            procstat -f $$ 2>/dev/null | head -10
+
+            echo "@@@ ==== watchdog report (empty means it never fired) ===="
+            cat /tmp/watchdog.txt 2>/dev/null | head -60
+
+            echo "@@@ DONE"
+            exit 0
+        env:
+          CI: true
+          GITHUB_ACTIONS: true
+          PUMA_TEST_DEBUG: true
+          TESTOPTS: -v
